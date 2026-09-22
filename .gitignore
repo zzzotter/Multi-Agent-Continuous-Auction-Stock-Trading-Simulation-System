@@ -1,0 +1,28 @@
+# 编译产物
+target/
+build/
+out/
+
+# IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# Maven wrapper（保留 jar）
+!.mvn/wrapper/maven-wrapper.jar
+
+# 日志
+*.log
+
+# 操作系统
+.DS_Store
+Thumbs.db

@@ -184,3 +184,4 @@ public class OrderBook {
                 getBestAsk() == null ? "-" : String.format("%.2f", getBestAsk().getPrice()));
     }
 }
+

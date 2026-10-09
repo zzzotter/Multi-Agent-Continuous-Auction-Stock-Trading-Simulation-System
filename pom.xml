@@ -19,10 +19,15 @@
     </properties>
 
     <dependencies>
-        <!-- JavaFX 核心（去掉 fxml，用代码写界面） -->
+        <!-- JavaFX 核心 -->
         <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-fxml</artifactId>
             <version>${javafx.version}</version>
         </dependency>
 
@@ -62,7 +67,7 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>0.0.8</version>
                 <configuration>
-                    <mainClass>com.trading.Main</mainClass>
+                    <mainClass>com.trading.gui.TradingApp</mainClass>
                 </configuration>
             </plugin>
         </plugins>

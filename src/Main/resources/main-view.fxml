@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+
+<BorderPane xmlns="http://javafx.com/javafx"
+            xmlns:fx="http://javafx.com/fxml"
+            fx:controller="com.trading.gui.MainViewController">
+
+    <!-- 顶部：标题 -->
+    <top>
+        <Label text="Multi-Agent Trading System"
+               style="-fx-font-size: 18px; -fx-font-weight: bold; -fx-padding: 10;"/>
+    </top>
+
+    <!-- 中间：三栏布局 -->
+    <center>
+        <HBox spacing="10">
+            <padding><Insets top="10" right="10" bottom="10" left="10"/></padding>
+
+            <!-- 左：订单输入 -->
+            <VBox spacing="8" prefWidth="250"
+                  style="-fx-border-color: #ccc; -fx-border-radius: 4; -fx-padding: 10;">
+                <Label text="Place Order" style="-fx-font-weight: bold;"/>
+
+                <Label text="Symbol:"/>
+                <ComboBox fx:id="symbolBox" maxWidth="Infinity"/>
+
+                <Label text="Side:"/>
+                <ComboBox fx:id="sideBox" maxWidth="Infinity"/>
+
+                <Label text="Price:"/>
+                <TextField fx:id="priceField" promptText="150.00"/>
+
+                <Label text="Quantity:"/>
+                <TextField fx:id="qtyField" promptText="100"/>
+
+                <Button fx:id="submitBtn" text="Submit Order"
+                        maxWidth="Infinity"
+                        style="-fx-background-color: #4CAF50; -fx-text-fill: white;"/>
+
+                <Label fx:id="statusLabel" text=""
+                       style="-fx-text-fill: green;"/>
+            </VBox>
+
+            <!-- 中：订单簿 -->
+            <VBox spacing="8" prefWidth="300"
+                  style="-fx-border-color: #ccc; -fx-border-radius: 4; -fx-padding: 10;">
+                <Label text="Order Book" style="-fx-font-weight: bold;"/>
+
+                <Label text="Symbol:"/>
+                <ComboBox fx:id="bookSymbolBox" maxWidth="Infinity"/>
+
+                <HBox spacing="20">
+                    <VBox>
+                        <Label text="Bids" style="-fx-text-fill: green; -fx-font-weight: bold;"/>
+                        <ListView fx:id="bidsList" prefHeight="200" prefWidth="120"/>
+                    </VBox>
+                    <VBox>
+                        <Label text="Asks" style="-fx-text-fill: red; -fx-font-weight: bold;"/>
+                        <ListView fx:id="asksList" prefHeight="200" prefWidth="120"/>
+                    </VBox>
+                </HBox>
+            </VBox>
+
+            <!-- 右：账户面板 -->
+            <VBox spacing="8" prefWidth="300"
+                  style="-fx-border-color: #ccc; -fx-border-radius: 4; -fx-padding: 10;">
+                <Label text="My Account" style="-fx-font-weight: bold;"/>
+
+                <Label fx:id="agentLabel" text="Agent: -"/>
+                <Label fx:id="cashLabel" text="Cash: -"/>
+                <Label text="Holdings:"/>
+                <ListView fx:id="holdingsList" prefHeight="150"/>
+                <Label fx:id="equityLabel" text="Total Equity: -"/>
+            </VBox>
+        </HBox>
+    </center>
+
+    <!-- 底部：状态栏 -->
+    <bottom>
+        <Label fx:id="bottomStatus" text="Ready"
+               style="-fx-padding: 5; -fx-text-fill: #666;"/>
+    </bottom>
+</BorderPane>

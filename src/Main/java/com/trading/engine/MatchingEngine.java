@@ -20,7 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 线程安全：submitOrder 是 synchronized
  */
 public class MatchingEngine {
-
+    /** 所有成交记录（用于 GUI 展示、统计分析） */
+    private final List<Trade> allTrades = new java.util.concurrent.CopyOnWriteArrayList<>();
     /** 每只股票一个订单簿 */
     private final Map<String, OrderBook> orderBooks;
 
@@ -77,10 +78,30 @@ public class MatchingEngine {
         if (order.getRemainingQuantity() > 0) {
             book.addOrder(order);
         }
-
+        // 记录所有成交
+        allTrades.addAll(trades);
         return trades;
     }
+    /**
+     * 获取所有历史成交记录（返回副本，线程安全）
+     */
+    public List<Trade> getAllTrades() {
+        return new ArrayList<>(allTrades);
+    }
 
+    /**
+     * 获取某只股票的最新成交价（没有成交则返回 null）
+     */
+    public Double getLastPrice(String symbol) {
+        // 从后往前找，第一个匹配 symbol 的
+        for (int i = allTrades.size() - 1; i >= 0; i--) {
+            Trade t = allTrades.get(i);
+            if (t.getSymbol().equals(symbol)) {
+                return t.getPrice();
+            }
+        }
+        return null;
+    }
     // ============================================================
     // 买单撮合：匹配 asks
     // ============================================================

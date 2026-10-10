@@ -19,6 +19,16 @@ import javafx.util.Duration;
 import java.util.List;
 import java.util.Map;
 
+import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.LineChart;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.XYChart;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableView;
+import javafx.beans.property.SimpleStringProperty;
+
+import com.trading.model.Trade;
+
 /**
  * 主界面控制器
  *
@@ -46,6 +56,24 @@ public class MainViewController {
     @FXML private Label equityLabel;
 
     @FXML private Label bottomStatus;
+
+    // 价格图
+    @FXML private LineChart<String, Number> priceChart;
+    @FXML private CategoryAxis xAxis;
+    @FXML private NumberAxis yAxis;
+
+    // 交易历史
+    @FXML private TableView<TradeRow> tradeTable;
+    @FXML private TableColumn<TradeRow, String> colTime;
+    @FXML private TableColumn<TradeRow, String> colSymbol;
+    @FXML private TableColumn<TradeRow, String> colPrice;
+    @FXML private TableColumn<TradeRow, String> colQty;
+    @FXML private TableColumn<TradeRow, String> colBuyer;
+    @FXML private TableColumn<TradeRow, String> colSeller;
+
+    // 价格数据：每只股票一条曲线
+    private final Map<String, XYChart.Series<String, Number>> priceSeries = new java.util.HashMap<>();
+    private int timeCounter = 0;
 
     private MatchingEngine engine;
     private AccountManager accountManager;
@@ -90,6 +118,22 @@ public class MainViewController {
         refreshAll();
 
         bottomStatus.setText("Ready. Agent: " + currentAgentId);
+
+        // 初始化价格图
+        for (String symbol : symbols) {
+            XYChart.Series<String, Number> series = new XYChart.Series<>();
+            series.setName(symbol);
+            priceChart.getData().add(series);
+            priceSeries.put(symbol, series);
+        }
+
+        // 初始化交易历史表
+        colTime.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().time));
+        colSymbol.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().symbol));
+        colPrice.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().price));
+        colQty.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().qty));
+        colBuyer.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().buyer));
+        colSeller.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().seller));
     }
 
     private void handleSubmit() {
@@ -137,6 +181,45 @@ public class MainViewController {
     private void refreshAll() {
         refreshOrderBook();
         refreshAccount();
+        refreshPriceChart();
+        refreshTradeHistory();
+    }
+
+    private void refreshPriceChart() {
+        Platform.runLater(() -> {
+            timeCounter++;
+            String timeLabel = String.valueOf(timeCounter);
+            for (String symbol : priceSeries.keySet()) {
+                Double price = engine.getLastPrice(symbol);
+                if (price != null) {
+                    XYChart.Series<String, Number> series = priceSeries.get(symbol);
+                    series.getData().add(new XYChart.Data<>(timeLabel, price));
+                    if (series.getData().size() > 30) {
+                        series.getData().remove(0);
+                    }
+                }
+            }
+        });
+    }
+
+    private void refreshTradeHistory() {
+        Platform.runLater(() -> {
+            List<Trade> trades = engine.getAllTrades();
+            ObservableList<TradeRow> rows = FXCollections.observableArrayList();
+            // 倒序：最新成交在最上面
+            for (int i = trades.size() - 1; i >= Math.max(0, trades.size() - 50); i--) {
+                Trade t = trades.get(i);
+                rows.add(new TradeRow(
+                        t.getTimestamp().toLocalTime().withNano(0).toString(),
+                        t.getSymbol(),
+                        String.format("%.2f", t.getPrice()),
+                        String.valueOf(t.getQuantity()),
+                        t.getBuyerAgentId(),
+                        t.getSellerAgentId()
+                ));
+            }
+            tradeTable.setItems(rows);
+        });
     }
 
     private void refreshOrderBook() {
@@ -174,5 +257,18 @@ public class MainViewController {
 
             equityLabel.setText(String.format("Total Equity: $%.2f", acc.getCash()));
         });
+    }
+
+    public static class TradeRow {
+        public final String time, symbol, price, qty, buyer, seller;
+        public TradeRow(String time, String symbol, String price,
+                        String qty, String buyer, String seller) {
+            this.time = time;
+            this.symbol = symbol;
+            this.price = price;
+            this.qty = qty;
+            this.buyer = buyer;
+            this.seller = seller;
+        }
     }
 }

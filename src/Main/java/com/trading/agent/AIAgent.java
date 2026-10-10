@@ -65,8 +65,10 @@ public class AIAgent {
                     System.err.println("[" + agentId + "] " + symbol + " 订单簿不存在，跳过");
                     continue;
                 }
-                Double bestBid = orderBook.getBestBid();
-                Double bestAsk = orderBook.getBestAsk();
+                Order bestBidOrder = orderBook.getBestBid();
+                Order bestAskOrder = orderBook.getBestAsk();
+                Double bestBid = bestBidOrder == null ? null : bestBidOrder.getPrice();
+                Double bestAsk = bestAskOrder == null ? null : bestAskOrder.getPrice();
                 double lastPrice = (bestBid != null && bestAsk != null) ? (bestBid + bestAsk) / 2.0
                         : (bestBid != null ? bestBid : (bestAsk != null ? bestAsk : 100.0)); // 兜底价格
 

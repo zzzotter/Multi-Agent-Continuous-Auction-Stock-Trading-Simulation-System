@@ -14,13 +14,14 @@ import java.util.concurrent.ConcurrentHashMap;
 
 
 
+
 /**
  * 撮合引擎：系统的核心
  *
  * 线程安全：submitOrder 是 synchronized
  */
 public class MatchingEngine {
-
+    private final List<Trade> allTrades = new java.util.concurrent.CopyOnWriteArrayList<>();
     /** 每只股票一个订单簿 */
     private final Map<String, OrderBook> orderBooks;
 
@@ -77,8 +78,29 @@ public class MatchingEngine {
         if (order.getRemainingQuantity() > 0) {
             book.addOrder(order);
         }
-
+        // 记录所有成交
+        allTrades.addAll(trades);
         return trades;
+    }
+
+    /**
+     * 获取某只股票的最新成交价（没有成交则返回 null）
+     */
+    public Double getLastPrice(String symbol) {
+        for (int i = allTrades.size() - 1; i >= 0; i--) {
+            Trade t = allTrades.get(i);
+            if (t.getSymbol().equals(symbol)) {
+                return t.getPrice();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 获取所有历史成交记录（返回副本，线程安全）
+     */
+    public List<Trade> getAllTrades() {
+        return new ArrayList<>(allTrades);
     }
 
     // ============================================================

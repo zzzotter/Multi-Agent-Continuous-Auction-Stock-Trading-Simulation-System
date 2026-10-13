@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.chart.*?>
+<?import javafx.geometry.Insets?>
+
+<BorderPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1" 
+            fx:controller="com.trading.gui.MainViewController">
+    
+    <!-- 顶部栏：AI 控制按钮 + 账户概要信息 -->
+    <top>
+        <HBox spacing="15" alignment="CENTER_LEFT" style="-fx-padding: 10; -fx-background-color: #f4f4f4; -fx-border-color: #ddd; -fx-border-width: 0 0 1 0;">
+            <Button fx:id="startAiBtn" text="Start AI Trading" style="-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold; -fx-cursor: hand;"/>
+            <Button fx:id="stopAiBtn" text="Stop AI" style="-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold; -fx-cursor: hand;"/>
+            <Separator orientation="VERTICAL" />
+            <Label fx:id="agentLabel" text="Agent: -" style="-fx-font-weight: bold;"/>
+            <Label fx:id="cashLabel" text="Cash: $0.00" />
+            <Label fx:id="equityLabel" text="Total Equity: $0.00" />
+            <Region HBox.hgrow="ALWAYS" />
+            <Label fx:id="bottomStatus" text="Ready" style="-fx-text-fill: #666;"/>
+        </HBox>
+    </top>
+
+    <!-- 中部主内容区：三列分割布局 -->
+    <center>
+        <SplitPane dividerPositions="0.33, 0.66">
+            
+            <!-- 左侧：手动下单区 + 订单簿 -->
+            <VBox spacing="10" style="-fx-padding: 10;">
+                <Label text="Order Entry" style="-fx-font-size: 14px; -fx-font-weight: bold;"/>
+                <GridPane hgap="10" vgap="10">
+                    <Label text="Symbol:" GridPane.columnIndex="0" GridPane.rowIndex="0"/>
+                    <ComboBox fx:id="symbolBox" GridPane.columnIndex="1" GridPane.rowIndex="0" maxWidth="Infinity"/>
+                    
+                    <Label text="Side:" GridPane.columnIndex="0" GridPane.rowIndex="1"/>
+                    <ComboBox fx:id="sideBox" GridPane.columnIndex="1" GridPane.rowIndex="1" maxWidth="Infinity"/>
+                    
+                    <Label text="Price:" GridPane.columnIndex="0" GridPane.rowIndex="2"/>
+                    <TextField fx:id="priceField" GridPane.columnIndex="1" GridPane.rowIndex="2"/>
+                    
+                    <Label text="Quantity:" GridPane.columnIndex="0" GridPane.rowIndex="3"/>
+                    <TextField fx:id="qtyField" GridPane.columnIndex="1" GridPane.rowIndex="3"/>
+                </GridPane>
+                <Button fx:id="submitBtn" text="Submit Order" maxWidth="Infinity" style="-fx-background-color: #2196F3; -fx-text-fill: white; -fx-cursor: hand;"/>
+                <Label fx:id="statusLabel" text="" wrapText="true"/>
+                
+                <Separator />
+                
+                <Label text="Order Book" style="-fx-font-size: 14px; -fx-font-weight: bold;"/>
+                <ComboBox fx:id="bookSymbolBox" maxWidth="Infinity"/>
+                
+                <HBox spacing="10">
+                    <VBox HBox.hgrow="ALWAYS">
+                        <Label text="Bids (Top 5)" />
+                        <ListView fx:id="bidsList" VBox.vgrow="ALWAYS" prefHeight="200"/>
+                    </VBox>
+                    <VBox HBox.hgrow="ALWAYS">
+                        <Label text="Asks (Top 5)" />
+                        <ListView fx:id="asksList" VBox.vgrow="ALWAYS" prefHeight="200"/>
+                    </VBox>
+                </HBox>
+            </VBox>
+
+            <!-- 中间：价格走势图 + 成交历史表 -->
+            <VBox spacing="10" style="-fx-padding: 10;">
+                <Label text="Price Chart" style="-fx-font-size: 14px; -fx-font-weight: bold;"/>
+                <LineChart fx:id="priceChart" VBox.vgrow="ALWAYS" legendVisible="true" createSymbols="false">
+                    <xAxis>
+                        <CategoryAxis fx:id="xAxis" label="Time" />
+                    </xAxis>
+                    <yAxis>
+                        <NumberAxis fx:id="yAxis" label="Price" />
+                    </yAxis>
+                </LineChart>
+                
+                <Label text="Trade History" style="-fx-font-size: 14px; -fx-font-weight: bold;"/>
+                <TableView fx:id="tradeTable" VBox.vgrow="ALWAYS" prefHeight="250">
+                    <columns>
+                        <TableColumn fx:id="colTime" text="Time" prefWidth="80"/>
+                        <TableColumn fx:id="colSymbol" text="Symbol" prefWidth="70"/>
+                        <TableColumn fx:id="colPrice" text="Price" prefWidth="70"/>
+                        <TableColumn fx:id="colQty" text="Qty" prefWidth="60"/>
+                        <TableColumn fx:id="colBuyer" text="Buyer" prefWidth="80"/>
+                        <TableColumn fx:id="colSeller" text="Seller" prefWidth="80"/>
+                    </columns>
+                </TableView>
+            </VBox>
+
+            <!-- 右侧：当前账户持仓明细 -->
+            <VBox spacing="10" style="-fx-padding: 10;">
+                <Label text="Holdings" style="-fx-font-size: 14px; -fx-font-weight: bold;"/>
+                <ListView fx:id="holdingsList" VBox.vgrow="ALWAYS"/>
+            </VBox>
+            
+        </SplitPane>
+    </center>
+</BorderPane>

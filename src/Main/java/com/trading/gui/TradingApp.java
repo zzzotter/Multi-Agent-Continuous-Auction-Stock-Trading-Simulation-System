@@ -13,11 +13,6 @@ import java.util.List;
 
 /**
  * JavaFX 应用入口
- *
- * 职责：
- * 1. 初始化核心系统（AccountManager、MatchingEngine）
- * 2. 加载主界面
- * 3. 把核心系统注入到控制器
  */
 public class TradingApp extends Application {
 
@@ -33,7 +28,7 @@ public class TradingApp extends Application {
             engine.registerSymbol(symbol);
         }
 
-        // 2. 创建一些 Agent 账户
+        // 2. 创建人类 Agent 账户
         for (int i = 1; i <= 2; i++) {
             String id = "human" + i;
             Account acc = new Account(id, 100_000.0);
@@ -43,9 +38,16 @@ public class TradingApp extends Application {
             accountManager.addAccount(acc);
         }
 
+        // ===== 新增：创建 AI 交易员账户 =====
+        Account aiAcc = new Account("ai_01", 100_000.0);
+        for (String s : SYMBOLS) {
+            aiAcc.addHolding(s, 100); // 给 AI 一点初始股票用来卖
+        }
+        accountManager.addAccount(aiAcc);
+        // ==================================
+
         // 3. 加载 FXML
-        FXMLLoader loader = new FXMLLoader(
-                getClass().getResource("/main-view.fxml"));
+        FXMLLoader loader = new FXMLLoader(getClass().getResource("/main-view.fxml"));
         Parent root = loader.load();
 
         // 4. 把核心系统传给控制器

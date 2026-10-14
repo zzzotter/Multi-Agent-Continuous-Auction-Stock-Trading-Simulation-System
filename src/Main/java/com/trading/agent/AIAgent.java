@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Random;                     // ★ 新增
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,7 +25,10 @@ public class AIAgent {
     private final String apiKey;
     private final String apiEndpoint;
     private final long rateLimitMs;
-    private long lastCallTime = 0; // 记录上次调用时间，用于限流
+    private long lastCallTime = 0;
+
+    // ★ 新增：兜底随机数发生器
+    private final Random random = new Random();
 
     public AIAgent(String agentId, Account account, MatchingEngine engine,
                    List<String> symbols, String apiKey,
@@ -70,28 +74,33 @@ public class AIAgent {
                 Double bestBid = bestBidOrder == null ? null : bestBidOrder.getPrice();
                 Double bestAsk = bestAskOrder == null ? null : bestAskOrder.getPrice();
                 double lastPrice = (bestBid != null && bestAsk != null) ? (bestBid + bestAsk) / 2.0
-                        : (bestBid != null ? bestBid : (bestAsk != null ? bestAsk : 100.0)); // 兜底价格
+                        : (bestBid != null ? bestBid : (bestAsk != null ? bestAsk : 100.0));
 
                 // 3. 构建 prompt 并调用 LLM
+                // ★ 改动 1：把行情传给 buildPrompt
                 String prompt = buildPrompt(symbol, bestBid, bestAsk, lastPrice);
                 String jsonResponse = callLLM(prompt);
-                System.out.println("【AI 原始返回】: " + jsonResponse);   // ← 加这行
+
+                // ★ 新增：打印 AI 原始返回，便于调试
+                System.out.println("【AI 返回】: " + jsonResponse);
 
                 // 4. 解析响应
                 Order order = parseResponse(jsonResponse, symbol);
+
+                // ★ 改动 2：解析失败/LLM 返回 HOLD 时，用兜底随机下单
                 if (order == null) {
-                    System.out.println("【AI 决策】: HOLD（或解析失败）");  // ← 加这行
-                    continue;
+                    order = fallbackOrder(symbol, lastPrice);
+                    if (order == null) continue;
+                    System.out.println("【兜底下单】: " + order.getSide() + " "
+                            + order.getQuantity() + " @ " + order.getPrice());
                 }
-                System.out.println("【AI 决策】: " + order.getSide() + " " +
-                        order.getQuantity() + " @ " + order.getPrice());  // ← 加这行
 
                 // 5. 安全校验
                 if (!isPriceSafe(order.getPrice(), lastPrice)) {
                     System.err.println("[" + agentId + "] " + symbol + " 价格波动过大，拒绝下单: " + order.getPrice());
                     continue;
                 }
-                
+
                 // 校验数量
                 if (order.getSide() == OrderSide.BUY && order.getPrice() * order.getQuantity() > account.getCash()) {
                     System.err.println("[" + agentId + "] 现金不足，拒绝买单");
@@ -104,45 +113,56 @@ public class AIAgent {
 
                 // 6. 提交订单
                 List<Trade> trades = engine.submitOrder(order);
-                System.out.println("✅ [" + agentId + "] " + symbol + " 下单成功: " + order.getSide() + " " + order.getQuantity() + " @ " + order.getPrice());
+                System.out.println("✅ [" + agentId + "] " + symbol + " 下单成功: "
+                        + order.getSide() + " " + order.getQuantity() + " @ " + order.getPrice());
 
             } catch (Exception e) {
-                // 核心要求：出错不能导致定时器挂掉
                 System.err.println("❌ [" + agentId + "] " + symbol + " 决策出错: " + e.getMessage());
-                // 回退到 HOLD，什么都不做
+                // ★ 改动 3：即使 API 挂了，也用兜底下单，保证演示不空场
+                try {
+                    Order fallback = fallbackOrder(symbol, 100.0);
+                    if (fallback != null) {
+                        engine.submitOrder(fallback);
+                        System.out.println("【兜底下单(异常后)】: " + fallback.getSide()
+                                + " " + fallback.getQuantity() + " @ " + fallback.getPrice());
+                    }
+                } catch (Exception ignored) {}
             }
         }
     }
 
-    // 构建 prompt
+    // ★ 改动 1：buildPrompt 增加行情参数 + 明确要求交易
     private String buildPrompt(String symbol, Double bestBid, Double bestAsk, double lastPrice) {
         int holding = account.getHolding(symbol);
         double cash = account.getCash();
 
-        return "你是一个量化交易 AI，请根据以下信息对股票 " + symbol + " 做出交易决策。\n" +
-                "【市场行情】\n" +
-                "  最新参考价（买一卖一中间价）: " + String.format("%.2f", lastPrice) + "\n" +
-                "  最优买价（best bid）: " + (bestBid == null ? "无" : bestBid) + "\n" +
-                "  最优卖价（best ask）: " + (bestAsk == null ? "无" : bestAsk) + "\n" +
+        return "你是一个量化交易 AI，请对股票 " + symbol + " 做出交易决策。\n" +
+                "【当前市场行情】\n" +
+                "  参考价（买卖中间价）: " + String.format("%.2f", lastPrice) + "\n" +
+                "  最优买价: " + (bestBid == null ? "无" : String.format("%.2f", bestBid)) + "\n" +
+                "  最优卖价: " + (bestAsk == null ? "无" : String.format("%.2f", bestAsk)) + "\n" +
                 "【你的账户】\n" +
-                "  可用现金: " + String.format("%.2f", cash) + " 元\n" +
-                "  持仓数量: " + holding + " 股\n" +
-                "【决策要求】\n" +
-                "  请在参考价上下 5% 范围内出价，否则订单会被系统拒绝。\n" +
-                "  严格按照以下 JSON 格式返回，不要包含任何其他解释性文字：\n" +
-                "  {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"price\": 数值, \"quantity\": 整数}\n" +
-                "  如果选择 HOLD，price 和 quantity 可以随意填写。";
+                "  现金: " + String.format("%.2f", cash) + " 元\n" +
+                "  持仓: " + holding + " 股\n" +
+                "【要求】\n" +
+                "  1. 出价必须在参考价的 ±5% 以内\n" +
+                "  2. 你必须从 BUY / SELL / HOLD 中选一个\n" +
+                "  3. 当前是模拟交易，请尽量做出 BUY 或 SELL 决策，不要一直 HOLD\n" +
+                "  4. 严格返回 JSON，不要任何其他文字：\n" +
+                "     {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"price\": 数值, \"quantity\": 整数}";
     }
 
-    // 调真实 LLM API (使用 Java 11 HttpClient)
+    // 调真实 LLM API
     private String callLLM(String prompt) throws Exception {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
 
-        // 简易构造 JSON 请求体，注意转义 prompt 中的双引号
-        String requestBody = "{\"model\": \"deepseek-chat\", \"messages\": [{\"role\": \"user\", \"content\": \"" 
-                + prompt.replace("\"", "\\\"").replace("\n", "\\n") + "\"}], \"temperature\": 0.1}";
+        // ★ 改动 4：temperature 从 0.1 调高到 0.9，输出更激进
+        String requestBody = "{\"model\": \"deepseek-chat\", \"messages\": [{\"role\": \"user\", \"content\": \""
+                + prompt.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "")
+                + "\"}], \"temperature\": 0.9}";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(apiEndpoint))
@@ -153,7 +173,7 @@ public class AIAgent {
 
         System.out.println("⏳ [" + agentId + "] 正在请求 DeepSeek API...");
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        
+
         if (response.statusCode() != 200) {
             throw new RuntimeException("API 请求失败，状态码: " + response.statusCode() + "，响应: " + response.body());
         }
@@ -161,23 +181,20 @@ public class AIAgent {
         return response.body();
     }
 
-    // 解析 JSON 响应 (这里用正则做最简单的提取)
+    // 解析 JSON 响应
     private Order parseResponse(String json, String symbol) {
         try {
-            // 提取 action
             Pattern actionPattern = Pattern.compile("\"action\"\\s*:\\s*\"(BUY|SELL|HOLD)\"");
             Matcher actionMatcher = actionPattern.matcher(json);
             if (!actionMatcher.find()) return null;
             String actionStr = actionMatcher.group(1);
             if ("HOLD".equals(actionStr)) return null;
 
-            // 提取 price
             Pattern pricePattern = Pattern.compile("\"price\"\\s*:\\s*([0-9.]+)");
             Matcher priceMatcher = pricePattern.matcher(json);
             if (!priceMatcher.find()) return null;
             double price = Double.parseDouble(priceMatcher.group(1));
 
-            // 提取 quantity
             Pattern qtyPattern = Pattern.compile("\"quantity\"\\s*:\\s*([0-9]+)");
             Matcher qtyMatcher = qtyPattern.matcher(json);
             if (!qtyMatcher.find()) return null;
@@ -191,6 +208,36 @@ public class AIAgent {
             System.err.println("解析 JSON 失败: " + e.getMessage() + "，原文: " + json);
             return null;
         }
+    }
+
+    // ★ 新增：兜底策略——LLM 说 HOLD 或失败时，随机下一单
+    private Order fallbackOrder(String symbol, double lastPrice) {
+        int holding = account.getHolding(symbol);
+        double cash = account.getCash();
+
+        boolean canBuy  = cash >= lastPrice * 10;
+        boolean canSell = holding >= 10;
+        if (!canBuy && !canSell) return null;
+
+        OrderSide side;
+        if (canBuy && canSell) {
+            side = random.nextBoolean() ? OrderSide.BUY : OrderSide.SELL;
+        } else if (canBuy) {
+            side = OrderSide.BUY;
+        } else {
+            side = OrderSide.SELL;
+        }
+
+        // 价格在参考价 ±2% 内随机
+        double factor = 0.98 + random.nextDouble() * 0.04;
+        double price = Math.round(lastPrice * factor * 100.0) / 100.0;
+        int qty = 10 + random.nextInt(40);
+
+        // 简单校验
+        if (side == OrderSide.BUY && price * qty > cash) return null;
+        if (side == OrderSide.SELL && qty > holding) return null;
+
+        return new Order(symbol, side, price, qty, agentId);
     }
 
     // 安全校验：价格在 lastPrice 的 ±5% 内

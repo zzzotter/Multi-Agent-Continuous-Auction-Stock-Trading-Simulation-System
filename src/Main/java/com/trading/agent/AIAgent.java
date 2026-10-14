@@ -73,12 +73,18 @@ public class AIAgent {
                         : (bestBid != null ? bestBid : (bestAsk != null ? bestAsk : 100.0)); // 兜底价格
 
                 // 3. 构建 prompt 并调用 LLM
-                String prompt = buildPrompt(symbol);
+                String prompt = buildPrompt(symbol, bestBid, bestAsk, lastPrice);
                 String jsonResponse = callLLM(prompt);
+                System.out.println("【AI 原始返回】: " + jsonResponse);   // ← 加这行
 
                 // 4. 解析响应
                 Order order = parseResponse(jsonResponse, symbol);
-                if (order == null) continue;
+                if (order == null) {
+                    System.out.println("【AI 决策】: HOLD（或解析失败）");  // ← 加这行
+                    continue;
+                }
+                System.out.println("【AI 决策】: " + order.getSide() + " " +
+                        order.getQuantity() + " @ " + order.getPrice());  // ← 加这行
 
                 // 5. 安全校验
                 if (!isPriceSafe(order.getPrice(), lastPrice)) {
@@ -109,16 +115,23 @@ public class AIAgent {
     }
 
     // 构建 prompt
-    private String buildPrompt(String symbol) {
+    private String buildPrompt(String symbol, Double bestBid, Double bestAsk, double lastPrice) {
         int holding = account.getHolding(symbol);
         double cash = account.getCash();
-        
+
         return "你是一个量化交易 AI，请根据以下信息对股票 " + symbol + " 做出交易决策。\n" +
-                "当前账户可用现金: " + cash + " 元\n" +
-                "当前持仓数量: " + holding + " 股\n" +
-                "请严格按照以下 JSON 格式返回，不要包含任何其他解释性文字：\n" +
-                "{\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"price\": 100.0, \"quantity\": 10}\n" +
-                "注意：如果选择 HOLD，price 和 quantity 可以随意填写。";
+                "【市场行情】\n" +
+                "  最新参考价（买一卖一中间价）: " + String.format("%.2f", lastPrice) + "\n" +
+                "  最优买价（best bid）: " + (bestBid == null ? "无" : bestBid) + "\n" +
+                "  最优卖价（best ask）: " + (bestAsk == null ? "无" : bestAsk) + "\n" +
+                "【你的账户】\n" +
+                "  可用现金: " + String.format("%.2f", cash) + " 元\n" +
+                "  持仓数量: " + holding + " 股\n" +
+                "【决策要求】\n" +
+                "  请在参考价上下 5% 范围内出价，否则订单会被系统拒绝。\n" +
+                "  严格按照以下 JSON 格式返回，不要包含任何其他解释性文字：\n" +
+                "  {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"price\": 数值, \"quantity\": 整数}\n" +
+                "  如果选择 HOLD，price 和 quantity 可以随意填写。";
     }
 
     // 调真实 LLM API (使用 Java 11 HttpClient)

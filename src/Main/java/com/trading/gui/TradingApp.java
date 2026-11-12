@@ -3,6 +3,7 @@ package com.trading.gui;
 import com.trading.account.AccountManager;
 import com.trading.engine.MatchingEngine;
 import com.trading.model.Account;
+import com.trading.model.ParticipantType;
 import javafx.application.Application;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -28,22 +29,23 @@ public class TradingApp extends Application {
             engine.registerSymbol(symbol);
         }
 
-        // 2. 创建人类 Agent 账户
+        // 2. 创建人类参与者（默认每户 $100,000，并持有每种股票 100 股）
         for (int i = 1; i <= 2; i++) {
             String id = "human" + i;
-            Account acc = new Account(id, 100_000.0);
-            for (String s : SYMBOLS) {
-                acc.addHolding(s, 100);
-            }
-            accountManager.addAccount(acc);
+            java.util.Map<String, Integer> holdings = new java.util.HashMap<>();
+            for (String s : SYMBOLS) holdings.put(s, 100);
+            accountManager.openAccount(id, "Human " + i, ParticipantType.HUMAN,
+                    100_000.0, holdings, engine, SYMBOLS);
         }
 
         // ===== 新增：创建 AI 交易员账户 =====
-        Account aiAcc = new Account("ai_01", 100_000.0);
-        for (String s : SYMBOLS) {
-            aiAcc.addHolding(s, 100); // 给 AI 一点初始股票用来卖
+        // AI 账户仅在设置 TRADING_AI_API_KEY 后自动创建；API 故障不会触发随机下单。
+        if (System.getenv("TRADING_AI_API_KEY") != null && !System.getenv("TRADING_AI_API_KEY").isBlank()) {
+            java.util.Map<String, Integer> holdings = new java.util.HashMap<>();
+            for (String s : SYMBOLS) holdings.put(s, 100);
+            accountManager.openAccount("ai_01", "AI 1", ParticipantType.AI,
+                    100_000.0, holdings, engine, SYMBOLS);
         }
-        accountManager.addAccount(aiAcc);
         // ==================================
 
         // 3. 加载 FXML

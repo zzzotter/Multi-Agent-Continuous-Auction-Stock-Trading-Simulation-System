@@ -13,44 +13,43 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
-import java.util.Random;                     // ★ 新增
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.ConcurrentHashMap;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-public class AIAgent {
-    private final String agentId;
-    private final Account account;
-    private final MatchingEngine engine;
+public class AIAgent extends Agent {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final List<String> symbols;
     private final String apiKey;
     private final String apiEndpoint;
     private final long rateLimitMs;
     private long lastCallTime = 0;
 
-    // ★ 新增：兜底随机数发生器
-    private final Random random = new Random();
+    private volatile String lastError;
+    private volatile String lastStatus = "Not started";
+    /** Next requested side is tracked independently for every symbol. */
+    private final java.util.Map<String, OrderSide> nextSideBySymbol = new ConcurrentHashMap<>();
 
     public AIAgent(String agentId, Account account, MatchingEngine engine,
                    List<String> symbols, String apiKey,
                    String apiEndpoint, long rateLimitMs) {
-        if (agentId == null || agentId.trim().isEmpty()) throw new IllegalArgumentException("agentId cannot be empty");
-        if (account == null) throw new IllegalArgumentException("account cannot be null");
-        if (engine == null) throw new IllegalArgumentException("engine cannot be null");
+        super(agentId, account, engine);
         if (symbols == null || symbols.isEmpty()) throw new IllegalArgumentException("symbols cannot be empty");
         if (apiKey == null || apiKey.trim().isEmpty()) throw new IllegalArgumentException("apiKey cannot be empty");
         if (apiEndpoint == null || apiEndpoint.trim().isEmpty()) throw new IllegalArgumentException("apiEndpoint cannot be empty");
 
-        this.agentId = agentId;
-        this.account = account;
-        this.engine = engine;
-        this.symbols = symbols;
+        this.symbols = List.copyOf(symbols);
         this.apiKey = apiKey;
         this.apiEndpoint = apiEndpoint;
         this.rateLimitMs = rateLimitMs;
     }
 
-    public String getAgentId() { return agentId; }
-    public Account getAccount() { return account; }
+    @Override public String getType() { return "AI"; }
+    @Override public void onMarketUpdate(com.trading.model.MarketData data) { /* scheduled decision loop drives API calls */ }
+    public String getLastError() { return lastError; }
+    public String getLastStatus() { return lastError == null ? lastStatus : "Error: " + lastError; }
 
     // 核心：触发一次决策循环
     public void decide() throws Exception {
@@ -78,65 +77,85 @@ public class AIAgent {
 
                 // 3. 构建 prompt 并调用 LLM
                 // ★ 改动 1：把行情传给 buildPrompt
-                String prompt = buildPrompt(symbol, bestBid, bestAsk, lastPrice);
+                OrderSide preferredSide = preferredSide(symbol, lastPrice);
+                String prompt = buildPrompt(symbol, bestBid, bestAsk, lastPrice, preferredSide);
                 String jsonResponse = callLLM(prompt);
 
                 // ★ 新增：打印 AI 原始返回，便于调试
                 System.out.println("【AI 返回】: " + jsonResponse);
 
                 // 4. 解析响应
-                Order order = parseResponse(jsonResponse, symbol);
+                Order order = parseResponse(extractAssistantContent(jsonResponse), symbol);
 
                 // ★ 改动 2：解析失败/LLM 返回 HOLD 时，用兜底随机下单
                 if (order == null) {
-                    order = fallbackOrder(symbol, lastPrice);
-                    if (order == null) continue;
-                    System.out.println("【兜底下单】: " + order.getSide() + " "
-                            + order.getQuantity() + " @ " + order.getPrice());
+                    lastError = null;
+                    lastStatus = "" + symbol + ": model chose HOLD or returned no valid order";
+                    System.out.println("[" + agentId + "] " + lastStatus);
+                    continue;
                 }
+
+                // Enforce the demo's per-symbol alternation. The model still chooses
+                // price and quantity, while the strategy controls BUY/SELL direction.
+                int quantity = order.getQuantity();
+                if (preferredSide == OrderSide.SELL) quantity = Math.min(quantity, account.getHolding(symbol));
+                else quantity = Math.min(quantity, (int) (account.getCash() / order.getPrice()));
+                if (quantity <= 0) {
+                    lastStatus = symbol + ": cannot execute required " + preferredSide + " (insufficient position/cash)";
+                    continue;
+                }
+                order = new Order(symbol, preferredSide, order.getPrice(), quantity, agentId);
 
                 // 5. 安全校验
                 if (!isPriceSafe(order.getPrice(), lastPrice)) {
+                    lastStatus = symbol + ": order rejected by price safety check";
                     System.err.println("[" + agentId + "] " + symbol + " 价格波动过大，拒绝下单: " + order.getPrice());
                     continue;
                 }
 
                 // 校验数量
                 if (order.getSide() == OrderSide.BUY && order.getPrice() * order.getQuantity() > account.getCash()) {
+                    lastStatus = symbol + ": order rejected, insufficient cash";
                     System.err.println("[" + agentId + "] 现金不足，拒绝买单");
                     continue;
                 }
                 if (order.getSide() == OrderSide.SELL && order.getQuantity() > account.getHolding(symbol)) {
+                    lastStatus = symbol + ": order rejected, insufficient holdings";
                     System.err.println("[" + agentId + "] 持仓不足，拒绝卖单");
                     continue;
                 }
 
                 // 6. 提交订单
                 List<Trade> trades = engine.submitOrder(order);
+                nextSideBySymbol.put(symbol, order.getSide() == OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY);
+                lastError = null;
+                lastStatus = symbol + ": " + order.getSide() + " " + order.getQuantity() + " @ " + order.getPrice();
                 System.out.println("✅ [" + agentId + "] " + symbol + " 下单成功: "
                         + order.getSide() + " " + order.getQuantity() + " @ " + order.getPrice());
 
             } catch (Exception e) {
                 System.err.println("❌ [" + agentId + "] " + symbol + " 决策出错: " + e.getMessage());
-                // ★ 改动 3：即使 API 挂了，也用兜底下单，保证演示不空场
-                try {
-                    Order fallback = fallbackOrder(symbol, 100.0);
-                    if (fallback != null) {
-                        engine.submitOrder(fallback);
-                        System.out.println("【兜底下单(异常后)】: " + fallback.getSide()
-                                + " " + fallback.getQuantity() + " @ " + fallback.getPrice());
-                    }
-                } catch (Exception ignored) {}
+                lastError = e.getMessage();
+                throw e;
             }
         }
     }
 
     // ★ 改动 1：buildPrompt 增加行情参数 + 明确要求交易
-    private String buildPrompt(String symbol, Double bestBid, Double bestAsk, double lastPrice) {
+    private OrderSide preferredSide(String symbol, double lastPrice) {
+        OrderSide preferred = nextSideBySymbol.getOrDefault(symbol, OrderSide.BUY);
+        if (preferred == OrderSide.BUY && account.getCash() < lastPrice) {
+            return account.getHolding(symbol) > 0 ? OrderSide.SELL : OrderSide.BUY;
+        }
+        if (preferred == OrderSide.SELL && account.getHolding(symbol) <= 0) return OrderSide.BUY;
+        return preferred;
+    }
+
+    private String buildPrompt(String symbol, Double bestBid, Double bestAsk, double lastPrice, OrderSide preferredSide) {
         int holding = account.getHolding(symbol);
         double cash = account.getCash();
 
-        return "你是一个量化交易 AI，请对股票 " + symbol + " 做出交易决策。\n" +
+        return "你是一个积极参与模拟股票大厅的短线交易员。请为 " + symbol + " 立即提交一笔可执行的限价单。\n" +
                 "【当前市场行情】\n" +
                 "  参考价（买卖中间价）: " + String.format("%.2f", lastPrice) + "\n" +
                 "  最优买价: " + (bestBid == null ? "无" : String.format("%.2f", bestBid)) + "\n" +
@@ -144,18 +163,26 @@ public class AIAgent {
                 "【你的账户】\n" +
                 "  现金: " + String.format("%.2f", cash) + " 元\n" +
                 "  持仓: " + holding + " 股\n" +
-                "【要求】\n" +
-                "  1. 出价必须在参考价的 ±5% 以内\n" +
-                "  2. 你必须从 BUY / SELL / HOLD 中选一个\n" +
-                "  3. 当前是模拟交易，请尽量做出 BUY 或 SELL 决策，不要一直 HOLD\n" +
-                "  4. 严格返回 JSON，不要任何其他文字：\n" +
-                "     {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"price\": 数值, \"quantity\": 整数}";
+                "【激进演示策略】\n" +
+                "1. 除非现金和持仓都不足，否则必须选 BUY 或 SELL，禁止 HOLD。\n" +
+                "2. 本轮指定方向为 " + preferredSide + "，必须按该方向提交；不得自行改成另一方向。每只股票成功 BUY 后下一轮 SELL，成功 SELL 后下一轮 BUY。\n" +
+                "3. 数量取 1 至 5 股，并确保总价不超过可用现金或卖出量不超过持仓。\n" +
+                "4. 为尽量成交，BUY 价格取最优卖价（没有卖价则参考价上浮 0.3%）；SELL 价格取最优买价（没有买价则参考价下调 0.3%）。所有价格须在参考价 ±5% 内。\n" +
+                "5. 只输出单行 JSON，不要 Markdown 或解释，格式严格为：\n" +
+                "{\"action\":\"BUY\",\"price\":100.00,\"quantity\":2} 或 {\"action\":\"SELL\",\"price\":100.00,\"quantity\":2}。";
+    }
+
+    private String extractAssistantContent(String response) throws Exception {
+        JsonNode root = JSON.readTree(response);
+        JsonNode content = root.path("choices").path(0).path("message").path("content");
+        if (!content.isTextual()) throw new IllegalArgumentException("API response is missing choices[0].message.content");
+        return content.asText();
     }
 
     // 调真实 LLM API
     private String callLLM(String prompt) throws Exception {
         HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(15))
+                .connectTimeout(Duration.ofSeconds(10))
                 .build();
 
         // ★ 改动 4：temperature 从 0.1 调高到 0.9，输出更激进
@@ -168,6 +195,7 @@ public class AIAgent {
                 .uri(URI.create(apiEndpoint))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + apiKey)
+                .timeout(Duration.ofSeconds(20))
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build();
 
@@ -208,36 +236,6 @@ public class AIAgent {
             System.err.println("解析 JSON 失败: " + e.getMessage() + "，原文: " + json);
             return null;
         }
-    }
-
-    // ★ 新增：兜底策略——LLM 说 HOLD 或失败时，随机下一单
-    private Order fallbackOrder(String symbol, double lastPrice) {
-        int holding = account.getHolding(symbol);
-        double cash = account.getCash();
-
-        boolean canBuy  = cash >= lastPrice * 10;
-        boolean canSell = holding >= 10;
-        if (!canBuy && !canSell) return null;
-
-        OrderSide side;
-        if (canBuy && canSell) {
-            side = random.nextBoolean() ? OrderSide.BUY : OrderSide.SELL;
-        } else if (canBuy) {
-            side = OrderSide.BUY;
-        } else {
-            side = OrderSide.SELL;
-        }
-
-        // 价格在参考价 ±2% 内随机
-        double factor = 0.98 + random.nextDouble() * 0.04;
-        double price = Math.round(lastPrice * factor * 100.0) / 100.0;
-        int qty = 10 + random.nextInt(40);
-
-        // 简单校验
-        if (side == OrderSide.BUY && price * qty > cash) return null;
-        if (side == OrderSide.SELL && qty > holding) return null;
-
-        return new Order(symbol, side, price, qty, agentId);
     }
 
     // 安全校验：价格在 lastPrice 的 ±5% 内

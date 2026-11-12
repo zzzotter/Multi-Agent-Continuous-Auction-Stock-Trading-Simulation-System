@@ -1,7 +1,8 @@
 package com.trading.gui;
 
 import com.trading.account.AccountManager;
-import com.trading.agent.AIAgent; // 新增导入
+import com.trading.agent.AIAgent;
+import com.trading.agent.Agent;
 import com.trading.engine.MatchingEngine;
 import com.trading.engine.OrderBook;
 import com.trading.model.Account;
@@ -31,6 +32,8 @@ import javafx.scene.control.TableView;
 import javafx.beans.property.SimpleStringProperty;
 
 import com.trading.model.Trade;
+import com.trading.model.ParticipantType;
+import com.trading.model.ParticipantProfile;
 
 /**
  * 主界面控制器
@@ -54,12 +57,19 @@ public class MainViewController {
     @FXML private Label equityLabel;
 
     @FXML private Label bottomStatus;
+    @FXML private ComboBox<String> accountBox;
+    @FXML private ListView<String> participantsList;
+    @FXML private TextField newIdField, newNameField, newCashField, newHoldingsField;
+    @FXML private ComboBox<ParticipantType> newTypeBox;
+    @FXML private Button openAccountBtn;
 
     // ===== 新增：AI 相关的控件 =====
     @FXML private Button startAiBtn;
     @FXML private Button stopAiBtn;
-    private AIAgent aiAgent;
-    private ScheduledExecutorService aiScheduler;
+    @FXML private Button startAllAiBtn;
+    @FXML private Button stopAllAiBtn;
+    @FXML private ComboBox<String> aiAgentBox;
+    private final Map<String, ScheduledExecutorService> aiSchedulers = new java.util.concurrent.ConcurrentHashMap<>();
     // ==============================
 
     // 价格图
@@ -69,6 +79,7 @@ public class MainViewController {
 
     // 交易历史
     @FXML private TableView<TradeRow> tradeTable;
+    @FXML private ComboBox<String> tradeSymbolBox;
     @FXML private TableColumn<TradeRow, String> colTime;
     @FXML private TableColumn<TradeRow, String> colSymbol;
     @FXML private TableColumn<TradeRow, String> colPrice;
@@ -90,6 +101,16 @@ public class MainViewController {
 
     /** 定时刷新器 */
     private Timeline refreshTimer;
+    private static final int MARKET_REFRESH_MS = 1000;
+    private static final int ACCOUNT_REFRESH_MS = 1500;
+    private static final int CHART_REFRESH_MS = 2000;
+    private static final int TRADE_REFRESH_MS = 500;
+    private static final int MAX_TRADE_ROWS = 100;
+    private long lastAccountRefresh, lastChartRefresh;
+    private int displayedTradeCount;
+    private final ObservableList<TradeRow> tradeRows = FXCollections.observableArrayList();
+    private final List<TradeRow> recentTradeRows = new java.util.ArrayList<>();
+    private final List<String> symbols = List.of("AAPL", "GOOGL", "TSLA");
 
     public void init(MatchingEngine engine, AccountManager accountManager, String agentId) {
         this.engine = engine;
@@ -97,7 +118,6 @@ public class MainViewController {
         this.currentAgentId = agentId;
 
         // 初始化下拉框
-        List<String> symbols = List.of("AAPL", "GOOGL", "TSLA");
         symbolBox.setItems(FXCollections.observableArrayList(symbols));
         symbolBox.getSelectionModel().selectFirst();
 
@@ -111,6 +131,24 @@ public class MainViewController {
         bidsList.setItems(bidsData);
         asksList.setItems(asksData);
         holdingsList.setItems(holdingsData);
+        tradeTable.setItems(tradeRows);
+        tradeSymbolBox.setItems(FXCollections.observableArrayList("ALL", "AAPL", "GOOGL", "TSLA"));
+        tradeSymbolBox.setValue("ALL");
+        tradeSymbolBox.setOnAction(e -> applyTradeFilter());
+        priceChart.setAnimated(false);
+        accountBox.setItems(FXCollections.observableArrayList(accountManager.getAllAccounts().keySet()));
+        accountBox.setValue(agentId);
+        accountBox.setOnAction(e -> {
+            String selected = accountBox.getValue();
+            if (selected != null && accountManager.containsAccount(selected)) {
+                currentAgentId = selected;
+                refreshAccount();
+            }
+        });
+        newTypeBox.setItems(FXCollections.observableArrayList(ParticipantType.values()));
+        newTypeBox.setValue(ParticipantType.HUMAN);
+        openAccountBtn.setOnAction(e -> createParticipant());
+        refreshParticipants();
 
         // 绑定事件
         submitBtn.setOnAction(e -> handleSubmit());
@@ -121,6 +159,9 @@ public class MainViewController {
 
         // 首次刷新
         refreshAll();
+        javafx.application.Platform.runLater(() -> {
+            if (priceChart.getScene() != null) priceChart.getScene().getWindow().setOnHidden(e -> shutdown());
+        });
 
         bottomStatus.setText("Ready. Agent: " + currentAgentId);
 
@@ -142,53 +183,11 @@ public class MainViewController {
 
         // ==================== AIAgent 接入部分 ====================
         
-        // 1. 初始化 AIAgent 
-        // ⚠️ 组长测的时候，把 "sk-test_key_placeholder" 换成真实的 Key，测完记得改回来，别提交到 GitHub！
-        Account aiAcc = accountManager.getAccount("ai_01");
-        if (aiAcc != null) {
-            aiAgent = new AIAgent(
-                    "ai_01",
-                    aiAcc,
-                    engine,
-                    symbols,
-                    "sk-test_key_placeholder", // 测试时换成真实 Key
-                    "https://api.deepseek.com/chat/completions",
-                    3000 // 限流 3 秒
-            );
-        }
-
-        // 2. 绑定 Start 按钮
-        startAiBtn.setOnAction(e -> {
-            if (aiScheduler != null && !aiScheduler.isShutdown()) {
-                bottomStatus.setText("AI 已经在运行中！");
-                return;
-            }
-            bottomStatus.setText("🚀 AI 自动交易已启动，每 3 秒决策一次...");
-            
-            // 创建单线程调度器（必须在后台线程执行，不能阻塞 GUI 线程）
-            aiScheduler = Executors.newSingleThreadScheduledExecutor();
-            aiScheduler.scheduleAtFixedRate(() -> {
-                try {
-                    if (aiAgent != null) {
-                        aiAgent.decide(); // 核心方法
-                    }
-                } catch (Exception ex) {
-                    System.err.println("AI 决策出错: " + ex.getMessage());
-                    Platform.runLater(() -> bottomStatus.setText("❌ AI 出错: " + ex.getMessage()));
-                }
-            }, 0, 3, TimeUnit.SECONDS); // 首次0秒执行，之后每3秒执行一次
-        });
-
-        // 3. 绑定 Stop 按钮
-        stopAiBtn.setOnAction(e -> {
-            if (aiScheduler != null && !aiScheduler.isShutdown()) {
-                aiScheduler.shutdown(); // 停止定时器
-                aiScheduler = null;
-                bottomStatus.setText("🛑 AI 自动交易已停止。");
-            } else {
-                bottomStatus.setText("AI 本来就没在运行。");
-            }
-        });
+        refreshAiChoices();
+        startAiBtn.setOnAction(e -> startSelectedAi());
+        stopAiBtn.setOnAction(e -> stopSelectedAi());
+        startAllAiBtn.setOnAction(e -> accountManager.getAllAgents().forEach((id, a) -> { if (a instanceof AIAgent) startAi(id, (AIAgent) a); }));
+        stopAllAiBtn.setOnAction(e -> new java.util.ArrayList<>(aiSchedulers.keySet()).forEach(this::stopAi));
         // =========================================================
     }
 
@@ -221,6 +220,105 @@ public class MainViewController {
         }
     }
 
+    private void createParticipant() {
+        try {
+            String id = newIdField.getText().trim();
+            String name = newNameField.getText().trim();
+            double cash = newCashField.getText().isBlank() ? 100_000.0 : Double.parseDouble(newCashField.getText().trim());
+            Map<String, Integer> holdings = new java.util.HashMap<>();
+            if (!newHoldingsField.getText().isBlank()) for (String item : newHoldingsField.getText().split(",")) {
+                String[] pair = item.trim().split(":");
+                if (pair.length != 2) throw new IllegalArgumentException("Holdings format: SYMBOL:quantity,SYMBOL:quantity");
+                holdings.put(pair[0].trim().toUpperCase(), Integer.parseInt(pair[1].trim()));
+            }
+            accountManager.openAccount(id, name, newTypeBox.getValue(), cash, holdings, engine, symbols);
+            refreshParticipants();
+            accountBox.setValue(id);
+            currentAgentId = id;
+            refreshAiChoices();
+            showStatus("Account created: " + id, false);
+        } catch (Exception ex) { showStatus("Cannot create account: " + ex.getMessage(), true); }
+    }
+
+    private void refreshParticipants() {
+        List<String> rows = new java.util.ArrayList<>();
+        accountManager.getAllParticipants().values().stream()
+                .sorted(java.util.Comparator.comparing(ParticipantProfile::getAgentId))
+                .forEach(p -> rows.add(p.getName() + " (" + p.getAgentId() + ", " + p.getType() + ")"));
+        participantsList.getItems().setAll(rows);
+        String selected = currentAgentId;
+        List<String> accountIds = accountManager.getAllAccounts().keySet().stream().sorted().toList();
+        if (!accountIds.equals(accountBox.getItems())) {
+            accountBox.setOnAction(null);
+            accountBox.getItems().setAll(accountIds);
+            String restore = selected != null && accountIds.contains(selected)
+                    ? selected : (accountIds.isEmpty() ? null : accountIds.get(0));
+            accountBox.setValue(restore);
+            currentAgentId = restore;
+            accountBox.setOnAction(e -> {
+                String id = accountBox.getValue();
+                if (id != null && accountManager.containsAccount(id)) {
+                    currentAgentId = id;
+                    refreshAccount();
+                }
+            });
+        }
+    }
+
+    private void shutdown() {
+        if (refreshTimer != null) refreshTimer.stop();
+        new java.util.ArrayList<>(aiSchedulers.keySet()).forEach(this::stopAi);
+    }
+
+    private void refreshAiChoices() {
+        if (accountManager == null || aiAgentBox == null) return;
+        String selected = aiAgentBox.getValue();
+        List<String> ids = new java.util.ArrayList<>();
+        accountManager.getAllAgents().forEach((id, agent) -> { if (agent instanceof AIAgent) ids.add(id); });
+        java.util.Collections.sort(ids);
+        aiAgentBox.setItems(FXCollections.observableArrayList(ids));
+        if (selected != null && ids.contains(selected)) aiAgentBox.setValue(selected);
+        else if (!ids.isEmpty()) aiAgentBox.setValue(ids.get(0));
+    }
+
+    private void startSelectedAi() {
+        String id = aiAgentBox.getValue();
+        Agent agent = id == null ? null : accountManager.getAgent(id);
+        if (agent instanceof AIAgent) startAi(id, (AIAgent) agent);
+        else bottomStatus.setText("No AI participant selected.");
+    }
+
+    private void startAi(String id, AIAgent agent) {
+        if (aiSchedulers.containsKey(id)) { bottomStatus.setText(id + " is already running."); return; }
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "ai-agent-" + id); t.setDaemon(true); return t;
+        });
+        ScheduledExecutorService previous = aiSchedulers.putIfAbsent(id, scheduler);
+        if (previous != null) { scheduler.shutdownNow(); return; }
+        scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                agent.decide();
+                Platform.runLater(() -> bottomStatus.setText(id + ": " + agent.getLastStatus()));
+            }
+            catch (Exception ex) {
+                System.err.println("AI " + id + " decision failed: " + ex.getMessage());
+                Platform.runLater(() -> bottomStatus.setText(id + " error: " + ex.getMessage()));
+            }
+        }, 0, 3, TimeUnit.SECONDS);
+        refreshAiChoices();
+        bottomStatus.setText("Started AI participant " + id + ".");
+    }
+
+    private void stopSelectedAi() {
+        String id = aiAgentBox.getValue();
+        if (id != null) stopAi(id);
+    }
+
+    private void stopAi(String id) {
+        ScheduledExecutorService scheduler = aiSchedulers.remove(id);
+        if (scheduler != null) { scheduler.shutdownNow(); bottomStatus.setText("Stopped AI participant " + id + "."); }
+    }
+
     private void showStatus(String msg, boolean isError) {
         statusLabel.setText(msg);
         statusLabel.setStyle(isError ? "-fx-text-fill: red;" : "-fx-text-fill: green;");
@@ -228,7 +326,7 @@ public class MainViewController {
 
     private void startRefreshTimer() {
         refreshTimer = new Timeline(
-                new KeyFrame(Duration.millis(500), e -> refreshAll())
+                new KeyFrame(Duration.millis(MARKET_REFRESH_MS), e -> refreshAll())
         );
         refreshTimer.setCycleCount(Timeline.INDEFINITE);
         refreshTimer.play();
@@ -236,14 +334,14 @@ public class MainViewController {
 
     private void refreshAll() {
         refreshOrderBook();
-        refreshAccount();
-        refreshPriceChart();
+        long now = System.currentTimeMillis();
+        if (now - lastAccountRefresh >= ACCOUNT_REFRESH_MS) { refreshAccount(); refreshParticipants(); lastAccountRefresh = now; }
+        if (now - lastChartRefresh >= CHART_REFRESH_MS) { refreshPriceChart(); lastChartRefresh = now; }
         refreshTradeHistory();
     }
 
     private void refreshPriceChart() {
-        Platform.runLater(() -> {
-            timeCounter++;
+        timeCounter++;
             String timeLabel = String.valueOf(timeCounter);
             for (String symbol : priceSeries.keySet()) {
                 Double price = engine.getLastPrice(symbol);
@@ -255,16 +353,14 @@ public class MainViewController {
                     }
                 }
             }
-        });
     }
 
     private void refreshTradeHistory() {
-        Platform.runLater(() -> {
             List<Trade> trades = engine.getAllTrades();
-            ObservableList<TradeRow> rows = FXCollections.observableArrayList();
-            for (int i = trades.size() - 1; i >= Math.max(0, trades.size() - 50); i--) {
+            if (trades.size() == displayedTradeCount) return;
+            for (int i = displayedTradeCount; i < trades.size(); i++) {
                 Trade t = trades.get(i);
-                rows.add(new TradeRow(
+                tradeRows.add(0, new TradeRow(
                         t.getTimestamp().toLocalTime().withNano(0).toString(),
                         t.getSymbol(),
                         String.format("%.2f", t.getPrice()),
@@ -272,9 +368,19 @@ public class MainViewController {
                         t.getBuyerAgentId(),
                         t.getSellerAgentId()
                 ));
+                recentTradeRows.add(0, tradeRows.get(0));
             }
-            tradeTable.setItems(rows);
-        });
+            displayedTradeCount = trades.size();
+            while (recentTradeRows.size() > MAX_TRADE_ROWS) recentTradeRows.remove(recentTradeRows.size() - 1);
+            applyTradeFilter();
+    }
+
+    private void applyTradeFilter() {
+        if (tradeSymbolBox == null) return;
+        String selected = tradeSymbolBox.getValue();
+        tradeRows.setAll(recentTradeRows.stream()
+                .filter(row -> selected == null || "ALL".equals(selected) || selected.equals(row.symbol))
+                .toList());
     }
 
     private void refreshOrderBook() {
@@ -284,7 +390,6 @@ public class MainViewController {
         OrderBook book = engine.getOrderBook(symbol);
         if (book == null) return;
 
-        Platform.runLater(() -> {
             bidsData.clear();
             for (Order o : book.getTopBids(5)) {
                 bidsData.add(String.format("%.2f x %d", o.getPrice(), o.getRemainingQuantity()));
@@ -293,11 +398,12 @@ public class MainViewController {
             for (Order o : book.getTopAsks(5)) {
                 asksData.add(String.format("%.2f x %d", o.getPrice(), o.getRemainingQuantity()));
             }
-        });
     }
 
     private void refreshAccount() {
-        Account acc = accountManager.getAccount(currentAgentId);
+        String id = currentAgentId;
+        if (id == null || id.isBlank() || !accountManager.containsAccount(id)) return;
+        Account acc = accountManager.getAccount(id);
         if (acc == null) return;
 
         Platform.runLater(() -> {

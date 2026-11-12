@@ -34,6 +34,7 @@ public abstract class Agent {
 
     public String getAgentId() { return agentId; }
     public Account getAccount() { return account; }
+    public String getName() { return agentId; }
 
     /**
      * 收到行情更新（由定时器调用）

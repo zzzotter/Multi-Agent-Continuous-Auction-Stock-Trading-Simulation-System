@@ -23,6 +23,9 @@ out/
 # 日志
 *.log
 
+# Local credentials (never commit)
+ai-local.properties
+
 # 操作系统
 .DS_Store
 Thumbs.db
